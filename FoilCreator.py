@@ -110,22 +110,25 @@ def get_entities(sketch: adsk.fusion.Sketch):
 def rotate_sketch(
     sketch: adsk.fusion.Sketch,
     rotate_angle: float,
+    offset: adsk.core.Point3D,
 ):
     transform = adsk.core.Matrix3D.create()
     transform.setToRotation(
         rotate_angle,
         adsk.core.Vector3D.create(0, 0, 1),
-        adsk.core.Point3D.create(0, 0, 0),
+        offset,
     )
     sketch.move(get_entities(sketch), transform)
 
 
-def skew_sketch(sketch: adsk.fusion.Sketch, skew_angle: float, r: float):
+def skew_sketch(
+    sketch: adsk.fusion.Sketch, skew_angle: float, skew_origin: adsk.core.Point3D
+):
     transform = adsk.core.Matrix3D.create()
     transform.setToRotation(
         skew_angle,
         adsk.core.Vector3D.create(1, 0, 0),
-        adsk.core.Point3D.create(0, r, 0),
+        skew_origin,
     )
     sketch.move(get_entities(sketch), transform)
 
@@ -141,17 +144,20 @@ def create_sketch(
     airfoil_coords: list[tuple[float, float]],
     rotate_angle: float,
     scale: float,
+    offset: adsk.core.Point3D,
     skew_angle: float,
-    skew_r: float,
+    skew_origin: adsk.core.Point3D,
 ):
     points_collection = adsk.core.ObjectCollection.create()
     for x, y in airfoil_coords:
-        pt = adsk.core.Point3D.create(x * scale, y * scale, 0)
+        pt = adsk.core.Point3D.create(
+            x * scale + offset.x, y * scale + offset.y, offset.z
+        )
         points_collection.add(pt)
     sketch.sketchCurves.sketchFittedSplines.add(points_collection)
 
-    rotate_sketch(sketch, rotate_angle)
-    skew_sketch(sketch, skew_angle, skew_r)
+    rotate_sketch(sketch, rotate_angle, offset)
+    skew_sketch(sketch, skew_angle, skew_origin)
 
 
 def get_rotate_angle(fraction: float):
@@ -161,7 +167,7 @@ def get_rotate_angle(fraction: float):
 
 def get_scale(fraction: float):
     all_scale = 1.2
-    max_scale_fraction = 0.6
+    max_scale_fraction = 0.5
     if fraction < max_scale_fraction:
         return all_scale * (-pow(fraction - max_scale_fraction, 2) + 1)
     return all_scale * math.sqrt(
@@ -169,16 +175,29 @@ def get_scale(fraction: float):
     )
 
 
+before_skew_angle = math.pi / 12
+after_skew_angle = math.pi / 6
+zero_skew_fraction = 0.5
+offset_y = -math.sin(before_skew_angle)
+max_offset_z = math.pi
+
+
 def get_skew_angle(fraction: float):
-    return math.pi * 1 / 2 * fraction
+    if fraction < zero_skew_fraction:
+        return before_skew_angle * (fraction - zero_skew_fraction) / zero_skew_fraction
+    return after_skew_angle * (fraction - zero_skew_fraction) / (1 - zero_skew_fraction)
 
 
-def end_point(sketch: adsk.fusion.Sketch, skew_r: float):
-    end_skew_angle = get_skew_angle(1)
+def get_offset(fraction: float):
+    return adsk.core.Point3D.create(0, offset_y, -max_offset_z * fraction)
+
+
+def end_point(sketch: adsk.fusion.Sketch):
+    offset = get_offset(zero_skew_fraction)
     end_pt = adsk.core.Point3D.create(
         0,
-        skew_r - math.cos(end_skew_angle) * skew_r,
-        -math.sin(end_skew_angle) * skew_r,
+        offset.y + math.sin(after_skew_angle) * max_offset_z * (1 - zero_skew_fraction),
+        offset.z - math.cos(after_skew_angle) * max_offset_z * (1 - zero_skew_fraction),
     )
     return sketch.sketchPoints.add(end_pt)
 
@@ -197,7 +216,7 @@ def run(_context):
         loft_profiles = list[adsk.fusion.Profile]()
 
         sketch_num = 50
-        skew_r = 2
+        skew_origin = get_offset(zero_skew_fraction)
 
         for i in range(sketch_num):
             if i < 6:
@@ -210,15 +229,16 @@ def run(_context):
                 airfoil_coords,
                 get_rotate_angle(fraction),
                 get_scale(fraction),
+                get_offset(fraction),
                 get_skew_angle(fraction),
-                skew_r,
+                skew_origin,
             )
 
             loft_profiles.append(sketch.profiles.item(0))
 
         end_sketch = sketches.add(base_plane)
         end_sketch.name = "Airfoil End"
-        end_sketch_point = end_point(end_sketch, skew_r)
+        end_sketch_point = end_point(end_sketch)
 
         loft_feats = root_comp.features.loftFeatures
         loft_input = loft_feats.createInput(
